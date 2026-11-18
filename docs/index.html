@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1019">
+  <meta name="description" content="Compare anti-aliasing in S.T.A.L.K.E.R. Anomaly with DLAA enabled and disabled. Drag the divider to see the difference frame by frame.">
+  <title>DLAA Showcase · DLSS_Tools</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <main class="page">
+    <header class="site-header">
+      <div class="eyebrow"><span class="accent-line"></span> DLSS_TOOLS / IMAGE QUALITY SHOWCASE</div>
+      <h1>See the difference.</h1>
+      <p class="intro">Compare the same scene in <strong>S.T.A.L.K.E.R. Anomaly</strong> with DLAA disabled and enabled. Drag the divider while the videos play to examine edge stability and fine detail.</p>
+    </header>
+
+    <section class="demo" aria-labelledby="demo-title">
+      <div class="demo-heading">
+        <div>
+          <p class="section-kicker">SIDE-BY-SIDE, FRAME BY FRAME</p>
+          <h2 id="demo-title">DLAA comparison</h2>
+        </div>
+        <span class="quality-pill">Native resolution · matched captures</span>
+      </div>
+
+      <div id="compare" class="comparison" style="--split: 50%; --zoom: 1;" aria-busy="true">
+        <div class="video-layer base-layer">
+          <video id="videoOn" class="scene-video" preload="metadata" playsinline muted disablepictureinpicture aria-label="Recording with DLAA on">
+            <source src="media/dlaa-on.mp4" type="video/mp4">
+          </video>
+        </div>
+        <div class="video-layer clipped-layer" aria-hidden="true">
+          <video id="videoOff" class="scene-video" preload="metadata" playsinline muted disablepictureinpicture tabindex="-1">
+            <source src="media/dlaa-off.mp4" type="video/mp4">
+          </video>
+        </div>
+
+        <div id="emptyState" class="empty-state" role="status">
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48" width="46" height="46" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="6" y="10" width="36" height="28" rx="5"/><path d="M19 10v28M26 22l7 4-7 4v-8z"/></svg>
+          </div>
+          <strong>Recordings coming soon</strong>
+          <span>The comparison will appear once the DLAA on/off MP4 clips are added.</span>
+        </div>
+
+        <div class="corner-label corner-left" aria-hidden="true"><span class="dot dot-off"></span> DLAA OFF</div>
+        <div class="corner-label corner-right" aria-hidden="true"><span class="dot dot-on"></span> DLAA ON</div>
+        <div class="separator" aria-hidden="true"><span class="handle"><span class="chevron">‹</span><span class="chevron">›</span></span></div>
+        <label class="sr-only" for="compareSlider">Reveal comparison: left is DLAA off, right is DLAA on</label>
+        <input id="compareSlider" class="comparison-input" type="range" min="0" max="100" value="50" step="1" aria-label="Before and after divider, percent from left">
+      </div>
+
+      <div class="controls" aria-label="Comparison video controls">
+        <button id="playButton" type="button" disabled aria-label="Play both videos">
+          <svg id="playIcon" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          <span id="playText">Play</span>
+        </button>
+        <button id="restartButton" class="subtle-button" type="button" disabled title="Return to beginning" aria-label="Restart comparison">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v6h6"/></svg>
+        </button>
+        <label class="sr-only" for="timeline">Timeline</label>
+        <input id="timeline" class="timeline" type="range" min="0" max="1000" value="0" step="1" disabled aria-label="Playback position">
+        <span id="timeDisplay" class="time-display" aria-live="off">0:00 / 0:00</span>
+        <div class="zoom-control">
+          <label for="zoomSelect">Zoom</label>
+          <select id="zoomSelect" aria-label="Comparison zoom level"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option></select>
+        </div>
+      </div>
+      <p id="playbackStatus" class="playback-status" role="status" aria-live="polite">Add <code>docs/media/dlaa-off.mp4</code> and <code>docs/media/dlaa-on.mp4</code> to enable playback.</p>
+    </section>
+
+    <section class="notes" aria-label="How to compare">
+      <div class="note"><span class="note-num">01</span><div><h3>Watch the motion</h3><p>Focus on thin geometry, distant edges, foliage and fences. Temporal anti-aliasing is easiest to judge while the scene is moving.</p></div></div>
+      <div class="note"><span class="note-num">02</span><div><h3>Pause and zoom</h3><p>Stop at a revealing frame and select 2× or 3× to inspect individual edges. Both sides use the same zoom and playback position.</p></div></div>
+      <div class="note"><span class="note-num">03</span><div><h3>Controlled comparison</h3><p>For a fair result, capture the same route, resolution, weather and graphics settings, changing only DLAA. Avoid added sharpening or motion blur.</p></div></div>
+    </section>
+    <footer>DLSS_Tools · Community-built DLAA and DLSS bridge for S.T.A.L.K.E.R. Anomaly. No trackers or external scripts.</footer>
+  </main>
+</body>
+</html>
