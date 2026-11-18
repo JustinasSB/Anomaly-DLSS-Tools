@@ -2,6 +2,8 @@
 
 Unofficial **DLSS Super Resolution and DLAA bridge** for the supported S.T.A.L.K.E.R. Anomaly multiplayer and GAMMA DirectX 11 executables. This repository contains the source for the injected D3D11/NGX bridge, its MO2-aware launcher, an optional controller, and the Mod Organizer 2 scripts/menu.
 
+[Showcase](https://justinassb.github.io/Anomaly-DLSS-Tools/)
+
 **Version:** v0.91.7 (stable source baseline). **Platform:** Windows x64, DirectX 11, compatible NVIDIA RTX GPU and current NVIDIA driver. This is a community mod, not an NVIDIA- or game-developer-endorsed product.
 
 > **Compatibility:** The bridge checks the game's executable SHA-256 against known profiles before installing hooks. It does **not** support arbitrary Anomaly/GAMMA builds. A different executable hash will fail closed; modifying the game's executable to bypass this check is not a supported installation method.
