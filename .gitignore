@@ -1,0 +1,32 @@
+# Local third-party SDKs (download independently; do not vendor NVIDIA binaries)
+/DLSS/
+/MinHook/
+
+# All build outputs, installers, icon extraction and local configuration backups
+/build_out/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.exe
+*.dll
+*.ico
+*.res
+*.zip
+*.bak
+*.log
+
+# IDE/editor/temp files
+.vs/
+.vscode/
+.idea/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.suo
+*.user
+*.tmp
+
+# Optional local NVIDIA DLL copied from the SDK by package script
+/nvngx_dlss.dll

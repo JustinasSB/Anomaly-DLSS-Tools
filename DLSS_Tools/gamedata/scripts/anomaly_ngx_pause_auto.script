@@ -1,0 +1,310 @@
+-- Anomaly NGX v0.5.3: independent pause menu lifecycle integration.
+-- Release: routine progress messages are suppressed; actionable errors remain visible.
+local function release_info(...) end
+-- Loaded via on_game_start as part of the normal Anomaly scripting lifecycle.
+-- The bridge generates the opt-in file from its DLL-local INI setting.
+-- No renderer restart from C++/D3D11 hooks; only acknowledged Lua dispatch.
+-- v0.5.3: explicit pause-menu lifecycle events, independent of Esc key input.
+-- The renderer consumes a temporary in-memory override, not settings.ini.
+local pause_auto = { enabled=false, installing=false, in_menu=false,
+    native_dispatched=false, pending=nil, seq=0, blocked=false,
+    resume_pending=false, resume_ticks=0, phantom_quit=0, menu_serial=0 }
+-- v080 multiplayer main-menu bootstrap. This is intentionally in the SAME
+-- script that already completed pause_auto.ready / native / restore handshakes.
+-- No GAMMA marker is ever written, and no C++ code executes vid_restart.
+local mp_bootstrap = {ticks=0, dispatched=0, last_status=nil}
+local function mp_bootstrap_path(suffix)
+    local app=os and os.getenv and os.getenv("LOCALAPPDATA")
+    return app and (app.."\\anomaly_ngx\\mp_bootstrap_v080."..suffix) or nil
+end
+local function mp_bootstrap_write_ack(status,token)
+    local path=mp_bootstrap_path("ack")
+    if not path or not io or not io.open then return end
+    local f=io.open(path,"wb")
+    if f then f:write(status," ",token,"\n");f:close() end
+end
+local function mp_bootstrap_on_actor_update()
+    -- The independent v079 script could fail to load; the pause module has
+    -- already proved it can register actor_on_update. Wait for a live actor.
+    mp_bootstrap.ticks=mp_bootstrap.ticks+1
+    if mp_bootstrap.ticks<20 then return end
+    if pause_auto.in_menu or pause_auto.blocked then return end
+    if not (level and type(level.present)=="function" and level.present()) then return end
+    local path=mp_bootstrap_path("request")
+    if not path or not io or not io.open then return end
+    local f=io.open(path,"rb")
+    if not f then return end
+    local content=f:read("*a") or "";f:close()
+    if content:match("^consumed%s+%d+_%d+%s*$") then return end
+    local token=content:match("^pending%s+(%d+_%d+)%s*$")
+    local expected=os and os.getenv and os.getenv("ANOMALY_NGX_BOOTSTRAP_V078_TOKEN")
+    if type(expected)~="string" or not token or token~=expected then
+        if mp_bootstrap.last_status~="bad_token" then
+            printf("[Anomaly NGX] MP_BOOTSTRAP_REFUSED reason=token_missing_or_mismatch")
+            mp_bootstrap.last_status="bad_token"
+        end
+        return
+    end
+    -- Win32/X-Ray can refuse os.remove even after the producer has closed
+    -- the file. Do not depend on delete permission for the startup handshake.
+    -- Instead, claim the request by replacing its contents *before* calling
+    -- vid_restart. A later native-menu constructor can overwrite it with a
+    -- fresh pending request when the player disconnects/reconnects.
+    -- A consumed marker is ignored on all subsequent actor updates.
+    local claimed=io.open(path,"wb")
+    if not claimed then
+        if mp_bootstrap.last_status~="marker_claim_failed" then
+            printf("[Anomaly NGX] MP_BOOTSTRAP_REFUSED reason=marker_claim_failed")
+            mp_bootstrap_write_ack("marker_claim_failed",token)
+            mp_bootstrap.last_status="marker_claim_failed"
+        end
+        return
+    end
+    local wrote=claimed:write("consumed ",token,"\n")
+    local closed=claimed:close()
+    if not wrote or not closed then
+        printf("[Anomaly NGX] MP_BOOTSTRAP_REFUSED reason=marker_claim_write_failed")
+        mp_bootstrap_write_ack("marker_claim_write_failed",token)
+        return
+    end
+    mp_bootstrap.last_status="consumed"
+    mp_bootstrap.dispatched=mp_bootstrap.dispatched+1
+    release_info("[Anomaly NGX] MP_BOOTSTRAP_DISPATCH seq=%d ticks=%d",mp_bootstrap.dispatched,mp_bootstrap.ticks)
+    local ok,err=pcall(function()
+        if type(exec_console_cmd)=="function" then exec_console_cmd("vid_restart")
+        elseif type(get_console)=="function" then
+            local c=get_console()
+            if not c then error("engine console missing") end
+            c:execute("vid_restart")
+        else error("no engine console dispatch") end
+    end)
+    mp_bootstrap_write_ack(ok and "restart_dispatched" or "restart_failed",token)
+    release_info("[Anomaly NGX] MP_BOOTSTRAP_RESULT ok=%s detail=%s",tostring(ok),tostring(err))
+end
+
+local function pause_auto_enabled()
+    -- The bridge creates this gate automatically from its DLL-local INI.
+    -- It is not a separate user setup step.
+    local app = os and os.getenv and os.getenv("LOCALAPPDATA")
+    if not app then return false end
+    local f=io and io.open and io.open(app.."\\anomaly_ngx\\pause_auto_enabled.flag","rb")
+    if not f then return false end
+    local v=f:read("*a");f:close()
+    return v and v:match("^%s*1")~=nil
+end
+local function pause_auto_path(ext)
+    local app = os and os.getenv and os.getenv("LOCALAPPDATA")
+    return app and (app.."\\anomaly_ngx\\pause_auto."..ext) or nil
+end
+local function pause_auto_write(verb)
+    local path=pause_auto_path("trigger")
+    local ack=pause_auto_path("ack")
+    if not path or not io or not io.open then return false end
+    pause_auto.seq=pause_auto.seq+1
+    local token=tostring(pause_auto.seq).."_"..tostring(math.floor((time_continual and time_continual() or 0)))
+    if ack and os and os.remove then os.remove(ack) end
+    local f=io.open(path,"wb")
+    if not f then return false end
+    f:write(verb," ",token,"\n");f:close()
+    pause_auto.pending={verb=verb,token=token,
+        since=(time_continual and time_continual() or 0)}
+    release_info("[Anomaly NGX] PAUSE_AUTO_REQUEST verb=%s token=%s",verb,token)
+    return true
+end
+local function pause_auto_pump(source)
+    local p=pause_auto.pending
+    if not p then return end
+    local ack=pause_auto_path("ack")
+    local f=ack and io and io.open and io.open(ack,"rb")
+    if not f then
+        local now=(time_continual and time_continual() or 0)
+        if p.since and now-p.since>5000 then
+            printf("[Anomaly NGX] PAUSE_AUTO_TIMEOUT verb=%s, bridge ack missing",p.verb)
+            pause_auto.pending=nil
+        end
+        return
+    end
+    local answer=f:read("*a") or "";f:close()
+    local status,token=answer:match("^(%w+)%s+([%w_]+)")
+    if token~=p.token then return end
+    pause_auto.pending=nil
+    if os and os.remove then os.remove(ack) end
+    if (status=="native" or status=="already_native") and not pause_auto.in_menu then
+        -- A renderer restart may destroy the current menu object and emit a
+        -- synthetic quit event while the pause remains open. Do not restore
+        -- low-resolution allocations until actor updates actually resume.
+        pause_auto.resume_pending=true
+        pause_auto.resume_ticks=0
+        release_info("[Anomaly NGX] PAUSE_AUTO_RESTORE_DEFERRED reason=menu_object_quit")
+    end
+    if status=="already_native" then
+        pause_auto.native_dispatched=true
+        release_info("[Anomaly NGX] PAUSE_AUTO_ALREADY_NATIVE source=%s",source)
+        return
+    end
+    if status=="restore" and pause_auto.in_menu then
+        -- User reopened the pause menu before Quality was reconstructed.
+        pause_auto_write("native");return
+    end
+    if status=="native" or status=="restore" then
+        local ok,err=pcall(function()
+            if type(exec_console_cmd)=="function" then exec_console_cmd("vid_restart")
+            elseif type(get_console)=="function" then
+                local c=get_console()
+                if not c then error("engine console object unavailable") end
+                c:execute("vid_restart")
+            else error("no console dispatch API") end
+        end)
+        if status=="native" then pause_auto.native_dispatched=ok
+        elseif status=="restore" and ok then pause_auto.native_dispatched=false end
+        if status=="native" and not ok then
+            pause_auto.resume_pending=true
+            pause_auto.resume_ticks=0
+        end
+        release_info("[Anomaly NGX] PAUSE_AUTO_RESTART status=%s source=%s ok=%s detail=%s",
+            status,source,tostring(ok),tostring(err))
+    else
+        release_info("[Anomaly NGX] PAUSE_AUTO_NO_RESTART status=%s source=%s",tostring(status),source)
+    end
+end
+local function pause_auto_saved_mode()
+    local app=os and os.getenv and os.getenv("LOCALAPPDATA")
+    local env=os and os.getenv and os.getenv("ANOMALY_NGX_CONFIG")
+    local path=(type(env)=="string" and #env>0) and env
+        or (app and (app.."\\anomaly_ngx\\settings.ini"))
+    if not path or not io or not io.open then return nil end
+    local f=io.open(path,"rb")
+    if not f then return nil end
+    local mode=nil
+    for line in f:lines() do
+        local value=line:match("^%s*upscaler_mode%s*=%s*([%w_]+)%s*$")
+        if value then mode=value:lower();break end
+    end
+    f:close()
+    return mode
+end
+
+local function pause_auto_patch_menu_update()
+    if pause_auto.update_patched then return true end
+    local mm=ui_main_menu and ui_main_menu.main_menu
+    if not mm or type(mm.Update)~="function" then return false end
+    local previous=mm.Update
+    mm.Update=function(self,...)
+        local result=previous(self,...)
+        pause_auto_pump("menu_update")
+        return result
+    end
+    pause_auto.update_patched=true
+    release_info("[Anomaly NGX] PAUSE_AUTO_UPDATE_HOOK installed=1")
+    return true
+end
+
+local function pause_auto_on_menu_init(wnd)
+    if not pause_auto.enabled or pause_auto.blocked then return end
+    if not (level and level.present and level.present()) then return end
+    if pause_auto_saved_mode()=="dlaa" then return end -- already native
+    -- Do not reject a second init just because the first UI object was
+    -- reconstructed without a matching on_quit event (observed in v079).
+    local reenter=pause_auto.in_menu
+    pause_auto.in_menu=true
+    pause_auto.menu_serial=pause_auto.menu_serial+1
+    pause_auto.resume_pending=false
+    pause_auto.resume_ticks=0
+    pause_auto_patch_menu_update()
+    release_info("[Anomaly NGX] PAUSE_AUTO_MENU_OPEN serial=%d reenter=%s",
+        pause_auto.menu_serial,tostring(reenter))
+    -- C++ idempotently responds already_native if allocations are native.
+    pause_auto_write("native")
+end
+local function pause_auto_on_menu_quit()
+    if not pause_auto.enabled or not pause_auto.in_menu then return end
+    pause_auto.in_menu=false
+    pause_auto.resume_pending=true
+    pause_auto.resume_ticks=0
+    pause_auto.phantom_quit=pause_auto.phantom_quit+1
+    release_info("[Anomaly NGX] PAUSE_AUTO_MENU_QUIT_DEFERRED seq=%d native_dispatched=%s",
+        pause_auto.phantom_quit,tostring(pause_auto.native_dispatched))
+    -- Actor updates, not UI object lifetime, confirm real gameplay resume.
+    -- Delaying restore also avoids a low-res vid_restart while Esc is open.
+end
+local function pause_auto_on_console_execute(cmd)
+    if not pause_auto.enabled or type(cmd)~="string" then return end
+    if cmd:lower():match("^%s*disconnect") then
+        pause_auto.blocked=true
+        pause_auto.in_menu=false
+        pause_auto.native_dispatched=false
+        pause_auto.resume_pending=false
+        pause_auto.resume_ticks=0
+        pause_auto_write("clear") -- no vid_restart on exit to the main menu
+    end
+end
+local function pause_auto_on_actor_update()
+    pause_auto_pump("actor_update")
+    -- The bootstrap is owned here, by this already-working Lua callback.
+    mp_bootstrap_on_actor_update()
+    -- Some menu destruction paths never emit on_quit; the first real actor
+    -- updates after pause are proof that its UI is no longer controlling 3D.
+    if pause_auto.in_menu and not pause_auto.blocked then
+        pause_auto.in_menu=false
+        pause_auto.resume_pending=true
+        pause_auto.resume_ticks=0
+        release_info("[Anomaly NGX] PAUSE_AUTO_STALE_MENU_RECOVERED source=actor_update")
+    end
+    if pause_auto.resume_pending and not pause_auto.in_menu and not pause_auto.blocked then
+        pause_auto.resume_ticks=pause_auto.resume_ticks+1
+        if pause_auto.resume_ticks>=5 then
+            pause_auto.resume_pending=false
+            pause_auto.resume_ticks=0
+            if pause_auto.native_dispatched or pause_auto.pending then
+                release_info("[Anomaly NGX] PAUSE_AUTO_REAL_RESUME_CONFIRM dispatch=restore")
+                pause_auto_write("restore")
+            end
+        end
+    end
+    if pause_auto.blocked then pause_auto.blocked=false end
+end
+local function install_pause_auto()
+    if pause_auto.installing then return end
+    pause_auto.installing=true
+    pause_auto.enabled=pause_auto_enabled()
+    release_info("[Anomaly NGX] PAUSE_AUTO_BOOT enabled=%s source=on_game_start", tostring(pause_auto.enabled))
+    if not pause_auto.enabled then
+        pause_auto.installing=false
+        return
+    end
+    if type(RegisterScriptCallback)~="function" then
+        printf("[Anomaly NGX] PAUSE_AUTO_DISABLED reason=missing_callback_api")
+        pause_auto.enabled=false
+        pause_auto.installing=false
+        return
+    end
+    RegisterScriptCallback("main_menu_on_init", pause_auto_on_menu_init)
+    RegisterScriptCallback("main_menu_on_quit", pause_auto_on_menu_quit)
+    RegisterScriptCallback("on_console_execute", pause_auto_on_console_execute)
+    RegisterScriptCallback("actor_on_update", pause_auto_on_actor_update)
+    -- Try now, and retry on the first in-game menu init when guaranteed loaded.
+    local patch=pause_auto_patch_menu_update()
+    release_info("[Anomaly NGX] PAUSE_AUTO_INSTALLED callbacks=1 menu_update=%s",tostring(patch))
+    pause_auto_write("ready") -- C++ acknowledges without requesting a reset
+end
+
+function on_game_start()
+    install_pause_auto()
+end
+
+function on_game_end()
+    if pause_auto.installing and type(UnregisterScriptCallback)=="function" then
+        UnregisterScriptCallback("main_menu_on_init", pause_auto_on_menu_init)
+        UnregisterScriptCallback("main_menu_on_quit", pause_auto_on_menu_quit)
+        UnregisterScriptCallback("on_console_execute", pause_auto_on_console_execute)
+        UnregisterScriptCallback("actor_on_update", pause_auto_on_actor_update)
+    end
+    pause_auto.enabled=false
+    pause_auto.installing=false
+    pause_auto.in_menu=false
+    pause_auto.native_dispatched=false
+    pause_auto.pending=nil
+    pause_auto.resume_pending=false
+    pause_auto.resume_ticks=0
+    mp_bootstrap.ticks=0
+end

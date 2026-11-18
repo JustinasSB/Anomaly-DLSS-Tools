@@ -1,0 +1,477 @@
+-- Anomaly NGX v0.4.3: additive Video > Basic options; all SR modes are gated on actual engine render size.
+-- Release: routine progress messages are suppressed; actionable errors remain visible.
+local function release_info(...) end
+-- Based on the same modxml UI extension pattern used by Anomaly native-upscaling compatibility patches.
+-- No nonexistent r_dlss_* console commands; Apply writes our actual DLL settings file.
+local installed = false
+local path = nil
+-- Automatic mode-restart dispatch after the host's Apply callback completes.
+-- No TimeEvent; those callbacks freeze while gameplay is paused.
+local renderer_reset_dispatching = false
+local OPTIONS = { anx_dlaa_enabled = true, anx_dlaa_mode = true, anx_dlaa_preset = true, anx_dlaa_jitter = true, anx_dlaa_sharpness = true, anx_dlaa_sss_sync = true }
+
+local function settings_path()
+    if path then return path end
+    -- Set by our MO2 launcher BEFORE the game process is created.
+    if os and type(os.getenv) == "function" then
+        local shared = os.getenv("ANOMALY_NGX_CONFIG")
+        if type(shared) ~= "string" or #shared == 0 then
+            shared = os.getenv("XRRAZOM_DLAA_CONFIG") -- older launcher compatibility
+        end
+        if type(shared) == "string" and #shared > 0 then path = shared; return path end
+        local localapp = os.getenv("LOCALAPPDATA")
+        if type(localapp) == "string" and #localapp > 0 then
+            path = localapp .. "\\anomaly_ngx\\settings.ini"
+            return path
+        end
+    end
+    -- Without an environment/path API, avoid silently writing to a DIFFERENT file.
+    return nil
+end
+
+local function read_settings()
+    local state = { enabled = true, mode = "dlaa", preset = "k", jitter = 100, sharpness = 0, sss_sync = true, auto_restart = true }
+    local filename = settings_path()
+    if not filename or not io or type(io.open) ~= "function" then return state end
+    local f = io.open(filename, "rb")
+    if not f then return state end
+    for line in f:lines() do
+        local key, value = line:match("^%s*([%w_]+)%s*=%s*([%w_]+)%s*$")
+        if key == "enabled" then state.enabled = (value ~= "0") end
+        if key == "upscaler_mode" and
+            (value == "dlaa" or value == "quality" or value == "balanced" or
+             value == "performance" or value == "ultra_performance") then
+            state.mode = value
+        end
+        if key == "preset" then
+            if value == "j" or value == "k" or value == "l" or value == "m" then
+                state.preset = value
+            else
+                state.preset = "k" -- migrate legacy presets before the menu displays them
+            end
+        end
+        if key == "jitter_percent" then
+            local n = tonumber(value)
+            if n then state.jitter = math.max(0, math.min(125, n)) end
+        end
+        if key == "sss_jitter_sync" then
+            state.sss_sync = (value == "1" or value == "2") -- old flip-Y => normal ON
+        end
+        if key == "sharpness_percent" then
+            local n = tonumber(value)
+            if n then state.sharpness = math.max(0, math.min(100, n)) end
+        end
+    end
+    f:close()
+    return state
+end
+
+-- v0.91.4: The base UI may return native booleans, 0/1 or their text
+-- equivalents for checkbox rows. Do not coerce an unfamiliar value to OFF:
+-- that could silently disable SSS synchronization when Apply also saves
+-- another option. Return nil to preserve the value loaded from settings.ini.
+local function normalize_checkbox(v)
+    if v == true or v == 1 then return true end
+    if v == false or v == 0 then return false end
+    if type(v) == "string" then
+        local text = v:lower():match("^%s*(.-)%s*$")
+        if text == "true" or text == "1" or text == "on" or text == "yes" then return true end
+        if text == "false" or text == "0" or text == "off" or text == "no" then return false end
+    end
+    return nil
+end
+
+local function save_settings(state)
+    local filename = settings_path()
+    if not filename or not io or type(io.open) ~= "function" then
+        printf("[Anomaly NGX] Lua file I/O not available. Config not saved.")
+        return false
+    end
+    -- A small, standalone INI; don't modify engine user.ltx or GAMMA config.
+    local f, err = io.open(filename, "wb")
+    if not f then
+        printf("[Anomaly NGX] Cannot open settings file: %s", tostring(err))
+        return false
+    end
+    f:write("[DLAA]\r\n")
+    f:write("enabled=", state.enabled and "1" or "0", "\r\n")
+    f:write("upscaler_mode=", state.mode, "\r\n")
+    f:write("preset=", state.preset, "\r\n")
+    f:write("jitter_percent=", tostring(math.floor(state.jitter + 0.5)), "\r\n")
+    f:write("sharpness_percent=", tostring(math.floor(state.sharpness + 0.5)), "\r\n")
+    f:write("sss_jitter_sync=", state.sss_sync and "1" or "0", "\r\n")
+    f:close()
+    release_info("[Anomaly NGX] Applied: enabled=%s mode=%s preset=%s jitter=%d sharp=%d", 
+        tostring(state.enabled), state.mode, state.preset, state.jitter, state.sharpness)
+    return true
+end
+
+local function get_enabled() return read_settings().enabled end
+local function get_mode() return read_settings().mode end
+local function get_preset() return read_settings().preset end
+local function get_jitter() return read_settings().jitter end
+local function get_sharpness() return read_settings().sharpness end
+local function get_sss_sync() return read_settings().sss_sync end
+
+local function install_menu_rows()
+    if not ui_options or not ui_options.options then return end
+    for _, top in ipairs(ui_options.options) do
+        if top.id == "video" and top.gr then
+            for _, group in ipairs(top.gr) do
+                if group.id == "basic" and group.gr then
+                    for _, row in ipairs(group.gr) do
+                        if row.id == "anx_dlaa_enabled" then return end
+                    end
+                    group.gr[#group.gr + 1] = { id="anx_dlaa_title", type="title",
+                        text="ui_mm_header_anx_dlaa", align="l", clr={255,200,200,200} }
+                    group.gr[#group.gr + 1] = { id="anx_dlaa_enabled", type="check", val=1,
+                        curr={get_enabled} }
+                    group.gr[#group.gr + 1] = { id="anx_dlaa_mode", type="list", val=0,
+                        curr={get_mode}, content={
+                            {"dlaa","anx_mode_dlaa"},
+                            {"quality","anx_mode_quality"},
+                            {"balanced","anx_mode_balanced"},
+                            {"performance","anx_mode_performance"},
+                            {"ultra_performance","anx_mode_ultra_performance"},
+                        } }
+                    group.gr[#group.gr + 1] = { id="anx_dlaa_preset", type="list", val=0,
+                        curr={get_preset}, content={
+                            {"j","anx_dlaa_j"}, {"k","anx_dlaa_k"},
+                            {"l","anx_dlaa_l"}, {"m","anx_dlaa_m"},
+                        } }
+                    -- type=track/val=2/min/max/step matches SSS23's MCM slider conventions.
+                    group.gr[#group.gr + 1] = { id="anx_dlaa_jitter", type="track", val=2,
+                        min=0, max=125, step=5, def=100, curr={get_jitter} }
+                    group.gr[#group.gr + 1] = { id="anx_dlaa_sharpness", type="track", val=2,
+                        min=0, max=100, step=5, def=0, curr={get_sharpness} }
+                    group.gr[#group.gr + 1] = { id="anx_dlaa_sss_sync", type="check", val=1,
+                        curr={get_sss_sync} }
+                    return
+                end
+            end
+        end
+    end
+end
+
+-- v0.7.7: GAMMA-only deferred mode switch. Never reconstruct GAMMA's renderer
+-- inside the open pause/options menu's Apply callback; the old UI can retain
+-- the low-res viewport/quad until it is closed and instantiated again.
+-- Multiplayer is unchanged: only the exact hash-verified GAMMA DLL sets this
+-- process-local environment opt-in.
+local gamma_reset = { registered=false, in_menu=false, pending=nil,
+    menu_closed=false, resumed_ticks=0, dispatched=0 }
+local function is_gamma_v078()
+    if not os or type(os.getenv)~="function" or
+       not io or type(io.open)~="function" then return false end
+    local app=os.getenv("LOCALAPPDATA")
+    local expected=os.getenv("ANOMALY_NGX_BOOTSTRAP_V078_TOKEN")
+    if type(app)~="string" or type(expected)~="string" or
+       not expected:match("^%d+_%d+$") then return false end
+    local f=io.open(app.."\\anomaly_ngx\\gamma_menu_v078.flag","rb")
+    if not f then return false end
+    local actual=f:read("*a")
+    f:close()
+    return actual==("verified "..expected.."\n")
+end
+-- v078: GAMMA-only pause-mode handoff. Never alter multiplayer's
+-- independent anomaly_ngx_pause_auto.script or saved DLSS choice.
+local gamma_pause = { enabled=false, active=false, sent=false,
+    menu_updates=0, restore_pending=false, restore_ticks=0,
+    update_patched=false, last_status=nil }
+local function gamma_pause_path(ext)
+    local app=os and os.getenv and os.getenv("LOCALAPPDATA")
+    return app and (app.."\\anomaly_ngx\\gamma_pause_v078."..ext) or nil
+end
+local function gamma_pause_token()
+    local token=os and os.getenv and os.getenv("ANOMALY_NGX_BOOTSTRAP_V078_TOKEN")
+    return (type(token)=="string" and token:match("^%d+_%d+$")) and token or nil
+end
+local function gamma_pause_enabled()
+    if not is_gamma_v078() then return false end
+    local token=gamma_pause_token()
+    local path=gamma_pause_path("flag")
+    if not token or not path or not io or not io.open then return false end
+    local f=io.open(path,"rb")
+    if not f then return false end
+    local payload=f:read("*a");f:close()
+    local policy=payload and payload:match("^verified%s+"..token.."%s+([01])%s*$")
+    if policy then gamma_pause.rebuild=(policy=="1") end
+    return policy~=nil
+end
+local function gamma_pause_write(command)
+    local path=gamma_pause_path("command")
+    local token=gamma_pause_token()
+    if not path or not token or not io or not io.open then return false end
+    local f=io.open(path,"wb")
+    if not f then return false end
+    f:write(command," ",token,"\n");f:close()
+    release_info("[Anomaly NGX] GAMMA_PAUSE_COMMAND request=%s token_verified=1",command)
+    return true
+end
+local function gamma_pause_status()
+    local path=gamma_pause_path("status")
+    local token=gamma_pause_token()
+    if not path or not token or not io or not io.open then return nil end
+    local f=io.open(path,"rb")
+    if not f then return nil end
+    local data=f:read("*a") or "";f:close()
+    local mode,seen=data:match("^allocated%s+(%u[%u_]*)%s+([%d_]+)")
+    if seen~=token then return nil end
+    return mode
+end
+local gamma_pause_update -- installed lazily after ui_main_menu exists
+local function gamma_pause_patch_update()
+    if gamma_pause.update_patched then return true end
+    local mm=ui_main_menu and ui_main_menu.main_menu
+    if not mm or type(mm.Update)~="function" then return false end
+    local original=mm.Update
+    mm.Update=function(self,...)
+        local result=original(self,...)
+        if gamma_pause_update then gamma_pause_update() end
+        return result
+    end
+    gamma_pause.update_patched=true
+    return true
+end
+local function restart_renderer()
+    if type(exec_console_cmd)=="function" then
+        exec_console_cmd("vid_restart")
+    elseif type(get_console)=="function" then
+        local console=get_console()
+        if not console then error("no engine console object") end
+        console:execute("vid_restart")
+    else error("no console execution function") end
+end
+gamma_pause_update=function()
+    if not gamma_pause.enabled or not gamma_pause.active or gamma_pause.sent or
+       not gamma_reset.in_menu then return end
+    gamma_pause.menu_updates=gamma_pause.menu_updates+1
+    if gamma_pause.menu_updates<2 then return end
+    local mode=gamma_pause_status()
+    if not mode then return end -- cannot verify the current renderer; fail closed
+    if gamma_pause.rebuild==false then
+        gamma_pause.sent=true
+        release_info("[Anomaly NGX] GAMMA_PAUSE_NATIVE_GLOBALS_ONLY renderer_rebuild=0")
+        return
+    end
+    if mode=="DLAA" then
+        gamma_pause.sent=true
+        release_info("[Anomaly NGX] GAMMA_PAUSE_ALREADY_NATIVE renderer=DLAA")
+        return
+    end
+    gamma_pause.sent=true -- consume before vid_restart, no feedback loop
+    release_info("[Anomaly NGX] GAMMA_PAUSE_SWITCH_NATIVE_BEGIN allocated=%s",mode)
+    local ok,err=pcall(restart_renderer)
+    release_info("[Anomaly NGX] GAMMA_PAUSE_SWITCH_NATIVE_RESULT ok=%s detail=%s",
+        tostring(ok),tostring(err))
+end
+local function gamma_on_menu_init()
+    gamma_reset.in_menu=true
+    if gamma_pause.enabled and not gamma_pause.active and
+       level and type(level.present)=="function" and level.present() then
+        local desired=read_settings().mode
+        if desired~="dlaa" and gamma_pause_write("native") then
+            gamma_pause.active=true
+            gamma_pause.sent=false
+            gamma_pause.menu_updates=0
+            gamma_pause.restore_pending=false
+            gamma_pause_patch_update()
+            release_info("[Anomaly NGX] GAMMA_PAUSE_OPEN desired=%s native_before_first_UI_frame=1",desired)
+        end
+    end
+    if gamma_reset.pending then
+        gamma_reset.menu_closed=false
+        gamma_reset.resumed_ticks=0
+    end
+end
+local function gamma_on_menu_quit()
+    gamma_reset.in_menu=false
+    if gamma_pause.enabled and gamma_pause.active then
+        gamma_pause.active=false
+        gamma_pause.sent=false
+        gamma_pause.restore_pending=gamma_pause_write("restore")
+        gamma_pause.restore_ticks=0
+        -- A pending Video > Basic quality change is merged into the one
+        -- return-to-game reconstruction, not a second restart.
+        if gamma_reset.pending then
+            release_info("[Anomaly NGX] GAMMA_PAUSE_MERGED_MODE_APPLY mode=%s",gamma_reset.pending)
+            gamma_reset.pending=nil
+            gamma_reset.menu_closed=false
+        end
+        release_info("[Anomaly NGX] GAMMA_PAUSE_CLOSE resume_selected_quality=1")
+        return
+    end
+    if gamma_reset.pending then
+        gamma_reset.menu_closed=true
+        gamma_reset.resumed_ticks=0
+        release_info("[Anomaly NGX] GAMMA_MODE_RESET_MENU_CLOSED mode=%s",gamma_reset.pending)
+    end
+end
+local function gamma_on_actor_update()
+    if gamma_pause.enabled and gamma_pause.restore_pending and not gamma_reset.in_menu then
+        gamma_pause.restore_ticks=gamma_pause.restore_ticks+1
+        if gamma_pause.restore_ticks>=2 then
+            gamma_pause.restore_pending=false
+            gamma_pause.restore_ticks=0
+            local allocated=gamma_pause_status()
+            local desired=(read_settings().mode or "dlaa"):upper()
+            if not allocated then
+                printf("[Anomaly NGX] GAMMA_PAUSE_RESTORE_UNKNOWN status_missing=1 manual_restart_possible")
+            elseif allocated~=desired then
+                release_info("[Anomaly NGX] GAMMA_PAUSE_RESTORE_BEGIN from=%s to=%s",allocated,desired)
+                local ok,err=pcall(restart_renderer)
+                release_info("[Anomaly NGX] GAMMA_PAUSE_RESTORE_RESULT ok=%s detail=%s",tostring(ok),tostring(err))
+            else
+                release_info("[Anomaly NGX] GAMMA_PAUSE_RESTORE_NOOP mode=%s",desired)
+            end
+        end
+        return -- pause transition owns this actor update
+    end
+    if not gamma_reset.pending or not gamma_reset.menu_closed or
+       gamma_reset.in_menu then return end
+    gamma_reset.resumed_ticks=gamma_reset.resumed_ticks+1
+    if gamma_reset.resumed_ticks<2 then return end
+    local mode=gamma_reset.pending
+    gamma_reset.pending=nil -- Consume BEFORE calling vid_restart; no restart loops.
+    gamma_reset.menu_closed=false
+    gamma_reset.resumed_ticks=0
+    gamma_reset.dispatched=gamma_reset.dispatched+1
+    release_info("[Anomaly NGX] GAMMA_MODE_RESET_DISPATCH mode=%s count=%d source=actor_after_menu_quit",
+        tostring(mode),gamma_reset.dispatched)
+    local ok,err=pcall(restart_renderer)
+    release_info("[Anomaly NGX] GAMMA_MODE_RESET_RESULT mode=%s ok=%s detail=%s",
+        tostring(mode),tostring(ok),tostring(err))
+end
+function on_game_start()
+    if gamma_reset.registered or not is_gamma_v078() then return end
+    if type(RegisterScriptCallback)~="function" then
+        printf("[Anomaly NGX] GAMMA_MODE_RESET_CALLBACKS_MISSING")
+        return
+    end
+    RegisterScriptCallback("main_menu_on_init",gamma_on_menu_init)
+    RegisterScriptCallback("main_menu_on_quit",gamma_on_menu_quit)
+    RegisterScriptCallback("actor_on_update",gamma_on_actor_update)
+    gamma_reset.registered=true
+    gamma_pause.enabled=gamma_pause_enabled()
+    if gamma_pause.enabled then gamma_pause_patch_update() end
+    release_info("[Anomaly NGX] GAMMA_MODE_RESET_CALLBACKS_READY menu_quit=1 actor_update=1")
+    release_info("[Anomaly NGX] GAMMA_PAUSE_CALLBACKS_READY enabled=%s renderer_rebuild_controlled_by_ini=1",
+        tostring(gamma_pause.enabled))
+end
+function on_game_end()
+    if gamma_reset.registered and type(UnregisterScriptCallback)=="function" then
+        UnregisterScriptCallback("main_menu_on_init",gamma_on_menu_init)
+        UnregisterScriptCallback("main_menu_on_quit",gamma_on_menu_quit)
+        UnregisterScriptCallback("actor_on_update",gamma_on_actor_update)
+    end
+    gamma_reset.registered=false
+    gamma_reset.pending=nil -- Never dispatch across session boundaries.
+    gamma_reset.menu_closed=false
+    gamma_reset.in_menu=false
+    gamma_reset.resumed_ticks=0
+    if gamma_pause.active and gamma_pause.enabled then
+        gamma_pause_write("restore") -- never leak pause-native state into a new level
+    end
+    gamma_pause.enabled=false
+    gamma_pause.active=false
+    gamma_pause.sent=false
+    gamma_pause.restore_pending=false
+    gamma_pause.restore_ticks=0
+    -- The old session command is ignored next launch by its token.
+end
+
+-- Called only after the original Apply handler and a successful INI write.
+-- This dispatches the real console command exactly like entering vid_restart.
+-- Unlike CreateTimeEvent it does not depend on simulation time while paused.
+-- Resolution changes automatically request an engine-owned renderer restart.
+-- GAMMA defers until the menu closes, preserving its verified v078 behavior.
+local function dispatch_mode_renderer_reset()
+    if renderer_reset_dispatching then
+        release_info("[Anomaly NGX] APPLY_RESET_ALREADY_DISPATCHING")
+        return
+    end
+    renderer_reset_dispatching = true
+    local latest=read_settings()
+    if is_gamma_v078() then
+        -- If the DLL was injected after on_game_start, register on demand.
+        if not gamma_reset.registered then on_game_start() end
+        -- The game can keep the options menu alive during Apply; do not restart
+        -- its renderer until the open menu has actually gone away.
+        if gamma_reset.registered then
+            gamma_reset.pending=latest.mode
+            gamma_reset.menu_closed=false
+            gamma_reset.resumed_ticks=0
+            release_info("[Anomaly NGX] GAMMA_MODE_RESET_DEFERRED mode=%s wait=menu_quit_then_2_actor_updates",latest.mode)
+        else
+            printf("[Anomaly NGX] GAMMA_MODE_RESET_DEFER_UNAVAILABLE mode=%s manual_restart_after_menu_close_required",latest.mode)
+        end
+        renderer_reset_dispatching=false
+        return
+    end
+    release_info("[Anomaly NGX] APPLY_RESET_DIRECT_BEGIN mode=%s paused_safe_not_verified=1",latest.mode)
+    local ok,err=pcall(restart_renderer)
+    release_info("[Anomaly NGX] APPLY_RESET_DIRECT_RETURN success=%s mode=%s detail=%s",
+        tostring(ok),latest.mode,tostring(err))
+    renderer_reset_dispatching=false
+end
+
+local function install_apply_hook()
+    if not ui_options or not ui_options.UIOptions then return end
+    local klass = ui_options.UIOptions
+    local old_accept = klass.On_Accept
+    klass.On_Accept = function(self, ...)
+        local state = read_settings()
+        local previous_mode = state.mode
+        local changed = false
+        local function stage(id, field)
+            local row = self:GetOption("video/basic/" .. id)
+            if not row or not row.curr then return end
+            local v = self:GetCurrentValue("video/basic", id, row)
+            if v == nil then return end
+            if field == "enabled" or field == "sss_sync" then
+                v = normalize_checkbox(v)
+                if v == nil then return end
+            elseif field == "jitter" or field == "sharpness" then
+                v = tonumber(v)
+                if not v then return end
+                if field == "jitter" then v = math.max(0, math.min(125, v))
+                else v = math.max(0, math.min(100, v)) end
+                v = math.floor(v + 0.5)
+            else
+                v = tostring(v):lower()
+            end
+            if state[field] ~= v then state[field] = v; changed = true end
+        end
+        stage("anx_dlaa_enabled", "enabled")
+        stage("anx_dlaa_mode", "mode")
+        stage("anx_dlaa_preset", "preset")
+        stage("anx_dlaa_jitter", "jitter")
+        stage("anx_dlaa_sharpness", "sharpness")
+        stage("anx_dlaa_sss_sync", "sss_sync")
+        -- Preserve the host UI's existing Apply/Cancel and cfg_save semantics.
+        local result = old_accept(self, ...)
+        if changed then
+            local saved = save_settings(state)
+            if saved and state.mode ~= previous_mode then
+                release_info("[Anomaly NGX] APPLY_RESET_MODE_CHANGED old=%s new=%s enabled=%s",
+                    tostring(previous_mode), tostring(state.mode), tostring(state.auto_restart))
+                dispatch_mode_renderer_reset()
+            end
+        end
+        return result
+    end
+end
+
+
+function on_xml_read()
+    if installed then return end
+    installed = true
+    install_apply_hook()
+    -- Add before original option coder builds path lookup, mirroring the donor.
+    local original = ui_options.init_opt_coder
+    ui_options.init_opt_coder = function(...)
+        install_menu_rows()
+        return original(...)
+    end
+    ui_options.init_opt_base()
+end

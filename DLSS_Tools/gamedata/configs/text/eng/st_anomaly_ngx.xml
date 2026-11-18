@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<string_table>
+  <string id="ui_mm_header_anx_dlaa"><text>NVIDIA DLSS</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_enabled"><text>Enable DLSS</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_enabled_desc"><text>Enables DLSS upscaling or native-resolution DLAA. For best image quality, disable other temporal anti-aliasing options.</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_preset"><text>DLSS model preset (advanced)</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_preset_desc"><text>Choose J, K, L or M. K is recommended. On some RTX cards L/M may reduce performance. Changing preset recreates NGX and resets temporal history.</text></string>
+  <string id="ui_mm_lst_anx_dlaa_j"><text>J - Transformer, all RTX (K generally preferred)</text></string>
+  <string id="ui_mm_lst_anx_dlaa_k"><text>K [recommended] - Transformer, all RTX</text></string>
+  <string id="ui_mm_lst_anx_dlaa_l"><text>L - 2nd gen, RTX 40/50 (Ultra Performance)</text></string>
+  <string id="ui_mm_lst_anx_dlaa_m"><text>M - 2nd gen, RTX 40/50 (Performance)</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_jitter"><text>Jitter strength (%)</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_jitter_desc"><text>Scales the Halton jitter passed to the engine and NGX together. 100 percent matches the previous validated setting. Smaller values can increase edge shimmer. Changing this resets temporal history.</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_sharpness"><text>Image sharpening (%)</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_sharpness_desc"><text>Optional image sharpening after DLSS processing. 0 disables it; high values may restore aliasing. Start at 10-20 percent.</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_sss_sync"><text>SSS jitter synchronization (Sync Halton)</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_sss_sync_desc"><text>On: Sync Halton jitter to Screen Space Shaders. Off: Leave SSS jitter unchanged. Disable SSS TAA to avoid double temporal filtering.</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_mode"><text>DLSS quality mode</text></string>
+  <string id="ui_mm_video_basic_anx_dlaa_mode_desc"><text>DLAA improves anti-aliasing at native resolution. Quality, Balanced, Performance and Ultra Performance use DLSS upscaling. Selecting a new mode automatically applies the necessary renderer restart.</text></string>
+  <string id="ui_mm_lst_anx_mode_dlaa"><text>DLAA (native resolution)</text></string>
+  <string id="ui_mm_lst_anx_mode_quality"><text>Quality</text></string>
+  <string id="ui_mm_lst_anx_mode_balanced"><text>Balanced</text></string>
+  <string id="ui_mm_lst_anx_mode_performance"><text>Performance</text></string>
+  <string id="ui_mm_lst_anx_mode_ultra_performance"><text>Ultra Performance</text></string>
+</string_table>

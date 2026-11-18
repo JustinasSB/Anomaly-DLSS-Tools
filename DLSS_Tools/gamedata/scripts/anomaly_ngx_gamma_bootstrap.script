@@ -1,0 +1,56 @@
+-- GAMMA only. The DLL creates this file only on the first constructor of a
+-- Release: routine progress messages are suppressed; actionable errors remain visible.
+local function release_info(...) end
+-- Quality/Balanced/Performance start, when the level and HUD are not loaded.
+-- No changes to the user's in-game mode selection or multiplayer callbacks.
+local bootstrap = { registered=false, dispatched=false, ticks=0 }
+local function pending_path()
+    local app = os and os.getenv and os.getenv("LOCALAPPDATA")
+    return app and (app.."\\anomaly_ngx\\gamma_bootstrap_v078.request") or nil
+end
+local function on_actor_update()
+    if bootstrap.dispatched then return end
+    bootstrap.ticks=bootstrap.ticks+1
+    if bootstrap.ticks < 20 then return end
+    if not (level and type(level.present)=="function" and level.present()) then return end
+    local path=pending_path()
+    if not path or not io or not io.open then return end
+    local f=io.open(path,"rb")
+    if not f then return end
+    local request=f:read("*a") or ""
+    f:close()
+    local expected=os and os.getenv and os.getenv("ANOMALY_NGX_BOOTSTRAP_V078_TOKEN")
+    local presented=request:match("^pending%s+(%d+_%d+)")
+    if not expected or presented~=expected then return end
+    -- Consume BEFORE dispatch. A failed restart must not loop forever.
+    if not (os and os.remove and os.remove(path)) then
+        printf("[Anomaly NGX] GAMMA_BOOTSTRAP_SKIP reason=marker_remove_failed")
+        return
+    end
+    bootstrap.dispatched=true
+    release_info("[Anomaly NGX] GAMMA_BOOTSTRAP_VID_RESTART_BEGIN ticks=%d",bootstrap.ticks)
+    local ok,err=pcall(function()
+        if type(exec_console_cmd)=="function" then
+            exec_console_cmd("vid_restart")
+        elseif type(get_console)=="function" then
+            local console=get_console()
+            if not console then error("no engine console object") end
+            console:execute("vid_restart")
+        else error("no console dispatch API") end
+    end)
+    release_info("[Anomaly NGX] GAMMA_BOOTSTRAP_VID_RESTART_RESULT ok=%s detail=%s",
+        tostring(ok),tostring(err))
+end
+function on_game_start()
+    if bootstrap.registered or type(RegisterScriptCallback)~="function" then return end
+    bootstrap.registered=true
+    RegisterScriptCallback("actor_on_update",on_actor_update)
+    release_info("[Anomaly NGX] GAMMA_BOOTSTRAP_CALLBACK_READY")
+end
+function on_game_end()
+    if bootstrap.registered and type(UnregisterScriptCallback)=="function" then
+        UnregisterScriptCallback("actor_on_update",on_actor_update)
+    end
+    bootstrap.registered=false
+    -- On game end, do not dispatch a restart from a menu.
+end

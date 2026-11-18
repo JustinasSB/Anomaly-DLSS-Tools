@@ -1,0 +1,3 @@
+// The ICO is generated at build time from the user's AnomalyDX11AVX.exe.
+// No copyrighted game icon is stored in the source distribution.
+1 ICON "build_out\\anomaly_ngx_launcher_icon.ico"
