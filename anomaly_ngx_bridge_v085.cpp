@@ -48,7 +48,7 @@ using DecompressFn = void(__fastcall*)(void*, void*);
 // X-Ray renderer's registered SSS shader constant handler for "ssfx_jitter".
 using SSFXJitterFn = void(__fastcall*)(void*, void*);
 static SSFXJitterFn g_originalSSFXJitter = nullptr;
-static constexpr std::uintptr_t kSSFXJitterRva = 0x3636D0;
+static std::uintptr_t kSSFXJitterRva = 0x3636D0;
 // v0.4.4 read-only engine video-restart / render-target manager probe.
 // The stock console command `vid_restart` executes FUN_14009F150, which
 // calls the engine device-reset vtable method. We do NOT trigger resets here.
@@ -92,8 +92,8 @@ using NamedTargetAllocationFn = void(__fastcall*)(void* slot, const char* name,
     unsigned width, unsigned height, unsigned format, unsigned config, unsigned char flag);
 static RendererConstructorFn g_originalRendererConstructor = nullptr;
 static NamedTargetAllocationFn g_originalNamedTargetAllocation = nullptr;
-static constexpr std::uintptr_t kRendererConstructorRva = 0x280880;
-static constexpr std::uintptr_t kNamedTargetAllocationRva = 0x2E3A50;
+static std::uintptr_t kRendererConstructorRva = 0x280880;
+static std::uintptr_t kNamedTargetAllocationRva = 0x2E3A50;
 static bool g_srAllocationAuditEnabled = true;
 static bool g_srConstructorHookInstalled = false;
 static bool g_srAllocationHookInstalled = false;
@@ -108,7 +108,7 @@ static DWORD g_srConstructorThread = 0;
 // pre-D3D11 injection: v0.3.6 verified ctor interception on the later path.
 using FullFrameFn = void(__fastcall*)(void*);
 static FullFrameFn g_originalFullFrame = nullptr;
-static constexpr std::uintptr_t kFullFrameRva = 0x2C2730;
+static std::uintptr_t kFullFrameRva = 0x2C2730;
 static bool g_srScaleOptIn = true;
 static bool g_srFullFrameHookInstalled = false;
 static bool g_srScaleReady = false;
@@ -129,8 +129,8 @@ static bool g_srWarnedRestartNeeded = false;
 // Keep both width/height globals native for that whole branch. The 3D scene
 // targets remain startup-scaled and are only consumed when an active level
 // enters the normal 3D path. This does not recreate textures on menu transitions.
-static constexpr std::uintptr_t kActiveLevelRva = 0x183EF58;
-static constexpr std::uintptr_t kHudRenderRva = 0x183EEA8;
+static std::uintptr_t kActiveLevelRva = 0x183EF58;
+static std::uintptr_t kHudRenderRva = 0x183EEA8;
 static bool g_srNativeMenuOptIn = true;
 // v079: MULTIPLAYER ONLY. Both these values are read exclusively after
 // the known-MP SHA-256 branch. GAMMA never observes or uses this adapter.
@@ -390,12 +390,12 @@ static unsigned long long g_srViewportAfterOriginalMismatches = 0;
 
 
 static DecompressFn g_originalDecompress = nullptr;
-static constexpr std::uintptr_t kDecompressRva = 0x21BA20;
-static constexpr std::uintptr_t kWidthRva = 0x185B8B8;
-static constexpr std::uintptr_t kHeightRva = 0x185B8BC;
-static constexpr std::uintptr_t kFovRva = 0x185BE8C;
-static constexpr std::uintptr_t kAspectRva = 0x185BE90;
-static constexpr std::uintptr_t kShaderTableRvas[6] = {
+static std::uintptr_t kDecompressRva = 0x21BA20;
+static std::uintptr_t kWidthRva = 0x185B8B8;
+static std::uintptr_t kHeightRva = 0x185B8BC;
+static std::uintptr_t kFovRva = 0x185BE8C;
+static std::uintptr_t kAspectRva = 0x185BE90;
+static std::uintptr_t kShaderTableRvas[6] = {
     0x185FAB8, 0x185FA48, 0x185FB28, 0x185FB98, 0x185FC08, 0x185FC78
 };
 static HANDLE g_activationEvent = nullptr;
@@ -453,6 +453,7 @@ static MpSettingsSnapshot g_mpSettingsPublished{};
 static LONG g_mpSettingsPublishedGeneration = 0; // protected by SRW lock
 static LONG g_mpSettingsAppliedGeneration = 0; // render thread only
 static std::uintptr_t g_moduleBase = 0;
+static bool g_mpPatternResolved = false; // MP-only, populated before hooks are installed
 static LONG64 g_decompressCalls = 0;
 static LONG64 g_decompressWrites = 0;
 static unsigned g_lastPatchedFrame = 0;
@@ -460,9 +461,9 @@ static LONG64 g_skippedForJitter = 0;
 static LONG64 g_patchFailures = 0;
 static float g_injectedJitterX = 0.f;
 static float g_injectedJitterY = 0.f;
-static constexpr std::uintptr_t kRendererRva = 0x3958A0;
-static constexpr std::uintptr_t kCallsiteRva = 0x325925;
-static constexpr std::uintptr_t kFrameCounterRva = 0x185B8D8; // observed engine frame counter
+static std::uintptr_t kRendererRva = 0x3958A0;
+static std::uintptr_t kCallsiteRva = 0x325925;
+static std::uintptr_t kFrameCounterRva = 0x185B8D8; // observed engine frame counter
 static constexpr BYTE kExpectedCall[] = {0xE8, 0x76, 0xFF, 0x06, 0x00};
 static constexpr std::uintptr_t kColorSlot = 0x438;
 static constexpr std::uintptr_t kMotionSlot = 0x668;
@@ -4716,6 +4717,24 @@ static bool HasExpectedDecompressPrologue(void* target) {
     BYTE runtime[sizeof(expected)]{};
     if (!SafeRead(reinterpret_cast<std::uintptr_t>(target), runtime, sizeof(runtime))) return false;
     if (std::memcmp(runtime, expected, sizeof(runtime)) == 0) return true;
+    // For a resolved MP profile the RIP displacement is naturally different.
+    // Validate the instruction encoding AND that its actual target is our
+    // uniquely discovered FOV global; never accept a foreign trampoline.
+    if (g_mpPatternResolved &&
+        std::memcmp(runtime, expected, 10) == 0 &&
+        runtime[0] == 0x40 && runtime[1] == 0x57) {
+        std::int32_t displacement = 0;
+        std::memcpy(&displacement, runtime + 10, sizeof(displacement));
+        const auto resolved = static_cast<std::uintptr_t>(
+            static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(target)) +
+            14 + displacement);
+        BYTE following[4]{};
+        static constexpr BYTE multiply[] = {0xC5,0xFA,0x59,0x0D};
+        if (resolved == g_moduleBase + kFovRva &&
+            SafeRead(reinterpret_cast<std::uintptr_t>(target)+14, following, 4) &&
+            std::memcmp(following,multiply,4)==0)
+            return true;
+    }
     wchar_t hex[sizeof(runtime) * 4 + 1]{};
     for (unsigned i = 0; i < sizeof(runtime); ++i) {
         wchar_t temp[5]{};
@@ -4784,10 +4803,9 @@ static bool WriteAuditedDetour(void* target, BYTE* relay) {
 
     // NEVER attempt to overwrite another hook, even if it appeared after
     // our initial prologue check.
-    static constexpr BYTE kExpectedPrologue[] = {
-        0x40,0x57,0x48,0x83,0xEC,0x30,0xC5,0xFA,0x10,0x05,0x5E,0x04,0x64,0x01
-    };
-    if (okay && std::memcmp(target, kExpectedPrologue, sizeof(kExpectedPrologue)) == 0) {
+    // The six-byte patch boundary is identical in the validated new binary.
+    // Revalidate the exact FOV RIP target before writing (foreign hooks refused).
+    if (okay && HasExpectedDecompressPrologue(target)) {
         const auto p = reinterpret_cast<std::uintptr_t>(target);
         const auto d = reinterpret_cast<std::uintptr_t>(relay);
         const auto relative = static_cast<std::int64_t>(d) - static_cast<std::int64_t>(p + 5);
@@ -5400,6 +5418,292 @@ static void InstallSRAllocationAudit(std::uintptr_t base) {
     Log(L"SR_ALLOC_HOOK constructor=%d status=%d rva=0x%X opt_in_resize=%d",
         g_srConstructorHookInstalled ? 1 : 0, rc, static_cast<unsigned>(kRendererConstructorRva),
         g_srScaleOptIn?1:0);
+}
+
+// MP compatibility: v0.91.8. This resolver deliberately lives OUTSIDE the
+// frozen GAMMA adapter. All non-original multiplayer binaries require unique
+// executable signatures, a verified call edge, PE .pdata starts, and recovered
+// writable globals. No nearest-RVA or fixed-delta guessing is used at runtime.
+static unsigned GammaScanText(std::uintptr_t, const char*, std::uintptr_t&);
+static bool GammaPdataStart(std::uintptr_t, std::uintptr_t);
+static bool GammaExactE8(std::uintptr_t, std::uintptr_t, std::uintptr_t);
+static bool GammaGetPe(std::uintptr_t,const IMAGE_NT_HEADERS64*&,
+                       const IMAGE_SECTION_HEADER*&);
+
+struct MpDiscoveredProfile {
+    std::uintptr_t jitter=0, ssfx=0, frame=0, constructor=0, allocator=0;
+    std::uintptr_t renderer=0, rendererCall=0;
+    std::uintptr_t width=0, height=0, frameCounter=0;
+    std::uintptr_t fov=0, aspect=0, activeLevel=0, hud=0;
+    std::uintptr_t shaderTables[6]{};
+};
+static bool MpGetRvaSection(std::uintptr_t base, std::uintptr_t rva,
+                            bool requireWrite, bool requireExecute) {
+    const IMAGE_NT_HEADERS64* nt=nullptr;
+    const IMAGE_SECTION_HEADER* sections=nullptr;
+    if (!GammaGetPe(base,nt,sections) || rva>=nt->OptionalHeader.SizeOfImage)
+        return false;
+    for (unsigned i=0;i<nt->FileHeader.NumberOfSections;++i) {
+        const auto& section=sections[i];
+        if (rva<section.VirtualAddress) continue;
+        const auto offset=rva-section.VirtualAddress;
+        if (offset>=section.Misc.VirtualSize) continue;
+        if (requireWrite && !(section.Characteristics & IMAGE_SCN_MEM_WRITE))
+            return false;
+        if (requireExecute && !(section.Characteristics & IMAGE_SCN_MEM_EXECUTE))
+            return false;
+        return true;
+    }
+    return false;
+}
+static bool MpRipRva(std::uintptr_t base, std::uintptr_t instructionRva,
+                     unsigned displacementOffset, unsigned length,
+                     std::uintptr_t& target) {
+    std::int32_t displacement=0;
+    if (!SafeRead(base+instructionRva+displacementOffset,
+                  &displacement,sizeof(displacement))) return false;
+    const std::int64_t rva=static_cast<std::int64_t>(instructionRva)+
+                           length+displacement;
+    if (rva<0 || rva>=0x7fffffff) return false;
+    target=static_cast<std::uintptr_t>(rva);
+    return true;
+}
+static bool MpUniqueExecutable(std::uintptr_t base, const char* pattern,
+                               std::uintptr_t& rva) {
+    return GammaScanText(base,pattern,rva)==1 &&
+           MpGetRvaSection(base,rva,false,true) && GammaPdataStart(base,rva);
+}
+static bool MpFindOpcodeRip(std::uintptr_t base, std::uintptr_t start,
+                            unsigned range, const BYTE* opcode,
+                            unsigned opLength, std::uintptr_t& target) {
+    if (!range || range>512 || opLength<2 || opLength>8) return false;
+    BYTE buffer[512]{};
+    if (!SafeRead(base+start,buffer,range)) return false;
+    for (unsigned i=0;i+opLength+4<=range;++i) {
+        if (std::memcmp(buffer+i,opcode,opLength)) continue;
+        if (MpRipRva(base,start+i,opLength,opLength+4,target)) return true;
+    }
+    return false;
+}
+static bool MpFindWidthHeight(std::uintptr_t base,std::uintptr_t jitter,
+                              std::uintptr_t& width,std::uintptr_t& height) {
+    BYTE code[176]{};
+    if (!SafeRead(base+jitter,code,sizeof(code))) return false;
+    unsigned matches=0;
+    for (unsigned i=38;i+6<130;++i) {
+        if (code[i]!=0x8b || code[i+1]!=0x05) continue;
+        std::uintptr_t candidate=0;
+        if(!MpRipRva(base,jitter+i,2,6,candidate)) continue;
+        if(!MpGetRvaSection(base,candidate,true,false)) continue;
+        for (unsigned j=i+6;j<i+28 && j+6<sizeof(code);++j) {
+            if (code[j]!=0x8b || code[j+1]!=0x05) continue;
+            std::uintptr_t next=0;
+            if(MpRipRva(base,jitter+j,2,6,next) && next==candidate+4) {
+                ++matches;width=candidate;height=next;
+                break;
+            }
+        }
+    }
+    return matches==1;
+}
+static bool MpFindActiveHud(std::uintptr_t base,std::uintptr_t fullframe,
+                            std::uintptr_t& level,std::uintptr_t& hud) {
+    BYTE code[1280]{};
+    if (!SafeRead(base+fullframe,code,sizeof(code))) return false;
+    unsigned matches=0;
+    for (unsigned i=0;i+26<sizeof(code);++i) {
+        // Two consecutive test-against-zero engine pointers with JE branches.
+        if (code[i]!=0x48 || code[i+1]!=0x39 || code[i+2]!=0x35 ||
+            code[i+7]!=0x0f || code[i+8]!=0x84 ||
+            code[i+13]!=0x48 || code[i+14]!=0x39 || code[i+15]!=0x35 ||
+            code[i+20]!=0x0f || code[i+21]!=0x84) continue;
+        std::uintptr_t first=0,second=0;
+        if (!MpRipRva(base,fullframe+i,3,7,first) ||
+            !MpRipRva(base,fullframe+i+13,3,7,second)) continue;
+        if(!MpGetRvaSection(base,first,true,false) ||
+           !MpGetRvaSection(base,second,true,false) ||
+           first<=second || first-second>0x1000) continue;
+        ++matches;level=first;hud=second;
+    }
+    return matches==1;
+}
+static bool MpHasRipReference(std::uintptr_t base,std::uintptr_t function,
+                              unsigned maxBytes,std::uintptr_t target) {
+    BYTE code[192]{};
+    if (maxBytes>sizeof(code) || !SafeRead(base+function,code,maxBytes))return false;
+    for(unsigned i=0;i+6<=maxBytes;++i) {
+        // Common RIP-relative 32-bit loads used by both renderer and frame.
+        const bool twoByte=(code[i]==0x8b &&
+                            (code[i+1]==0x05 || code[i+1]==0x15));
+        const bool threeByte=(i+7<=maxBytes && code[i]==0x44 &&
+                              code[i+1]==0x8b && code[i+2]==0x05);
+        if(!twoByte && !threeByte)continue;
+        std::uintptr_t resolved=0;
+        const unsigned prefix=threeByte?3:2;
+        if(MpRipRva(base,function+i,prefix,prefix+4,resolved) &&
+           resolved==target) return true;
+    }
+    return false;
+}
+static bool MpResolveStructuredProfile(std::uintptr_t base) {
+    MpDiscoveredProfile p{};
+    if(!MpUniqueExecutable(base,
+         "40 57 48 83 EC 30 C5 FA 10 05 ?? ?? ?? ?? C5 FA 59 0D",p.jitter) ||
+       !MpUniqueExecutable(base,
+         "48 89 74 24 10 57 48 83 EC 30 C5 FA 10 ?? ?? ?? ?? ?? C5 E8 57 D2 C5 F8",p.ssfx) ||
+       !MpUniqueExecutable(base,
+         "48 8B C4 55 41 54 48 8D A8 68 FF FF FF 48 81 EC",p.frame) ||
+       !MpUniqueExecutable(base,
+         "48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 "
+         "?? ?? ?? ?? B8 ?? ?? ?? 00 E8 ?? ?? ?? ?? 48 2B E0 33 F6 48 8D 99 10 04 00 00",p.constructor) ||
+       !MpUniqueExecutable(base,
+         "48 89 5C 24 08 57 48 83 EC 40 0F B6 84 24 80 00 00 00 48 8B D9 48 8B 0D",p.allocator) ||
+       !MpUniqueExecutable(base,
+         "48 8B C4 55 53 56 57 41 54 41 56 41 57 48 8D 68 A1 48 81 EC "
+         "?? ?? 00 00 4C 8B 0D ?? ?? ?? ?? 45 33 FF",p.renderer))
+        return false;
+    std::uintptr_t callPattern=0;
+    if (GammaScanText(base,
+            "48 8B CE E8 ?? ?? ?? ?? 48 8D 4D 80 E8 ?? ?? ?? ?? 44 89 7C 24 40",
+            callPattern)!=1) return false;
+    p.rendererCall=callPattern+3;
+    if (!GammaExactE8(base,p.rendererCall,p.renderer)) return false;
+    // Require the observed allocator to be genuinely called by the
+    // discovered constructor; a coincidental prologue is not sufficient.
+    unsigned allocatorCalls=0;
+    BYTE ctorCode[16384]{};
+    if (!SafeRead(base+p.constructor,ctorCode,sizeof(ctorCode))) return false;
+    for (unsigned i=0;i+5<=sizeof(ctorCode);++i) {
+        if(ctorCode[i]!=0xE8) continue;
+        std::int32_t disp=0; std::memcpy(&disp,ctorCode+i+1,4);
+        if (static_cast<std::int64_t>(p.constructor)+i+5+disp==
+            static_cast<std::int64_t>(p.allocator)) ++allocatorCalls;
+    }
+    if(allocatorCalls<10) return false;
+
+    // Recover the FOV and aspect globals from their actual RIP references.
+    const BYTE fovOpcode[]={0xc5,0xfa,0x10,0x05};
+    const BYTE aspectOpcode[]={0xc5,0xfa,0x5e,0x0d};
+    if(!MpFindOpcodeRip(base,p.jitter+6,16,fovOpcode,sizeof(fovOpcode),p.fov) ||
+       !MpFindOpcodeRip(base,p.jitter+20,96,aspectOpcode,sizeof(aspectOpcode),p.aspect) ||
+       p.aspect!=p.fov+4 ||
+       !MpFindWidthHeight(base,p.jitter,p.width,p.height) ||
+       p.height!=p.width+4) return false;
+    p.frameCounter=p.width+0x20;
+    if(!MpHasRipReference(base,p.frame,192,p.frameCounter) ||
+       !MpHasRipReference(base,p.renderer,160,p.width) ||
+       !MpHasRipReference(base,p.renderer,160,p.height)) return false;
+
+    // Engine's 6 per-stage pointer arrays live in writable .data/.bss.
+    const BYTE tableLea[]={0x48,0x8d,0x35};
+    std::uintptr_t tableRoot=0;
+    if(!MpFindOpcodeRip(base,p.jitter+72,128,tableLea,
+                        sizeof(tableLea),tableRoot)) return false;
+    const std::uintptr_t offsets[6]={0x5f0,0x580,0x660,0x6d0,0x740,0x7b0};
+    for(unsigned i=0;i<6;++i) p.shaderTables[i]=tableRoot+offsets[i];
+    // Verify every indexed stage lookup, not just the first pointer table.
+    // A future build that reorganizes stage storage must not inherit our
+    // old offsets even if the function's entry signature still matches.
+    BYTE decompressionCode[0x350]{};
+    if(!SafeRead(base+p.jitter,decompressionCode,sizeof(decompressionCode)))return false;
+    for(unsigned i=0;i<6;++i) {
+        BYTE expected[8]={0x48,0x8b,0x8c,
+                          static_cast<BYTE>(i==5 ? 0xc6 : 0xce),0,0,0,0};
+        const std::uint32_t displacement=static_cast<std::uint32_t>(offsets[i]);
+        std::memcpy(expected+4,&displacement,4);
+        bool found=false;
+        for(unsigned j=0;j+sizeof(expected)<=sizeof(decompressionCode);++j)
+            if(std::memcmp(decompressionCode+j,expected,sizeof(expected))==0)
+                {found=true;break;}
+        if(!found)return false;
+    }
+    // Confirm renderer resource fields used by DLSS still retain their
+    // historically verified offsets (color 0x438, motion 0x668, depth 0x728).
+    BYTE constructorCode[0x400]{};
+    if(!SafeRead(base+p.constructor,constructorCode,sizeof(constructorCode))) return false;
+    const BYTE colorField[]={0x4c,0x8d,0xa9,0x38,0x04,0x00,0x00};
+    const BYTE motionField[]={0x49,0x89,0xb6,0x68,0x06,0x00,0x00};
+    const BYTE depthField[]={0x49,0x89,0xb6,0x28,0x07,0x00,0x00};
+    auto hasField=[&](const BYTE* needle,SIZE_T count)->bool {
+        for(SIZE_T j=0;j+count<=sizeof(constructorCode);++j)
+            if(std::memcmp(constructorCode+j,needle,count)==0)return true;
+        return false;
+    };
+    if(!hasField(colorField,sizeof(colorField)) ||
+       !hasField(motionField,sizeof(motionField)) ||
+       !hasField(depthField,sizeof(depthField)))return false;
+    if(!MpFindActiveHud(base,p.frame,p.activeLevel,p.hud)) return false;
+    for(const auto rva : {p.fov,p.aspect,p.width,p.height,p.frameCounter,
+                          p.activeLevel,p.hud,p.shaderTables[0],p.shaderTables[1],
+                          p.shaderTables[2],p.shaderTables[3],p.shaderTables[4],
+                          p.shaderTables[5]})
+        if(!MpGetRvaSection(base,rva,true,false)) return false;
+    // A method-layout check: the decompression shader-array root must really
+    // be followed by its known stage-0 indexed load, not an unrelated LEA.
+    BYTE shaderLoad[8]{};
+    static constexpr BYTE expectedLoad[]={0x48,0x8b,0x8c,0xce,0xf0,0x05,0x00,0x00};
+    if (!SafeRead(base+p.jitter+0xc3,shaderLoad,sizeof(shaderLoad)) ||
+        std::memcmp(shaderLoad,expectedLoad,sizeof(shaderLoad))!=0) return false;
+
+    kDecompressRva=p.jitter; kSSFXJitterRva=p.ssfx;
+    kFullFrameRva=p.frame; kRendererConstructorRva=p.constructor;
+    kNamedTargetAllocationRva=p.allocator; kRendererRva=p.renderer;
+    kCallsiteRva=p.rendererCall;
+    kWidthRva=p.width; kHeightRva=p.height;
+    kFovRva=p.fov; kAspectRva=p.aspect;
+    kFrameCounterRva=p.frameCounter;
+    kActiveLevelRva=p.activeLevel; kHudRenderRva=p.hud;
+    for(unsigned i=0;i<6;++i) kShaderTableRvas[i]=p.shaderTables[i];
+    g_mpPatternResolved=true;
+    return true;
+}
+
+// Opt-in compatibility report (does not enable routine renderer logging).
+// Written only on explicit request, including when a new executable is
+// rejected. Avoid creating logs in Mod Organizer's virtualized mod directory.
+static void MpOptionalCompatibilityReport(const wchar_t* launcherIni,
+                                          const wchar_t* exeSha,
+                                          int profileKind) {
+    if (GetPrivateProfileIntW(L"COMPATIBILITY",L"write_report",0,launcherIni)==0)
+        return;
+    wchar_t temp[MAX_PATH]{};
+    const DWORD n=GetTempPathW(MAX_PATH,temp);
+    if(!n || n>=MAX_PATH) return;
+    wchar_t path[MAX_PATH+90]{};
+    swprintf_s(path,L"%lsanomaly_ngx_compat_pid%lu.txt",temp,GetCurrentProcessId());
+    const wchar_t* selection=profileKind==2 ? L"known_gamma" :
+                              profileKind==1 ? (g_mpPatternResolved ? L"multiplayer_scanned" : L"known_multiplayer") :
+                                               L"unsupported_fail_closed";
+    wchar_t text[1400]{};
+    swprintf_s(text,L"sha256=%ls\r\nselection=%ls\r\nauto_resolver=%d\r\n"
+             L"renderer_rva=0x%llX callsite_rva=0x%llX frame_rva=0x%llX\r\n"
+             L"constructor_rva=0x%llX allocator_rva=0x%llX decompress_rva=0x%llX ssfx_rva=0x%llX\r\n"
+             L"width_rva=0x%llX height_rva=0x%llX frame_counter_rva=0x%llX\r\n"
+             L"fov_rva=0x%llX aspect_rva=0x%llX level_rva=0x%llX hud_rva=0x%llX\r\n",
+             exeSha,selection,g_mpPatternResolved?1:0,
+             static_cast<unsigned long long>(kRendererRva),
+             static_cast<unsigned long long>(kCallsiteRva),
+             static_cast<unsigned long long>(kFullFrameRva),
+             static_cast<unsigned long long>(kRendererConstructorRva),
+             static_cast<unsigned long long>(kNamedTargetAllocationRva),
+             static_cast<unsigned long long>(kDecompressRva),
+             static_cast<unsigned long long>(kSSFXJitterRva),
+             static_cast<unsigned long long>(kWidthRva),
+             static_cast<unsigned long long>(kHeightRva),
+             static_cast<unsigned long long>(kFrameCounterRva),
+             static_cast<unsigned long long>(kFovRva),
+             static_cast<unsigned long long>(kAspectRva),
+             static_cast<unsigned long long>(kActiveLevelRva),
+             static_cast<unsigned long long>(kHudRenderRva));
+    char utf8[3200]{};
+    const int bytes=WideCharToMultiByte(CP_UTF8,0,text,-1,utf8,sizeof(utf8),nullptr,nullptr);
+    if(bytes<=1) return;
+    HANDLE f=CreateFileW(path,GENERIC_WRITE,FILE_SHARE_READ,nullptr,
+                         CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(f==INVALID_HANDLE_VALUE)return;
+    DWORD written=0;
+    WriteFile(f,utf8,static_cast<DWORD>(bytes-1),&written,nullptr);
+    CloseHandle(f);
 }
 
 // ------------------------------------------------------------
@@ -7833,12 +8137,21 @@ static DWORD WINAPI Startup(LPVOID) {
         Log(L"SR_PROFILE_REJECT reason=EXE_SHA256_READ_FAILURE no_hooks=1");
         return 10;
     }
-    const SrExeProfile profile=wcscmp(exeSha256,kKnownMultiplayerSha256)==0 ?
-        SrExeProfile::MultiplayerV053 :
-        (wcscmp(exeSha256,kKnownGammaSha256)==0 ? SrExeProfile::GammaPassiveV077 : SrExeProfile::Unsupported);
+    // Keep the GAMMA adapter byte-identical and its exact-hash rule intact.
+    // The original MP binary retains its historic addresses; other builds
+    // must satisfy ALL structural signatures and data-reference checks below.
+    SrExeProfile profile = SrExeProfile::Unsupported;
+    if (wcscmp(exeSha256,kKnownGammaSha256)==0)
+        profile=SrExeProfile::GammaPassiveV077;
+    else if (wcscmp(exeSha256,kKnownMultiplayerSha256)==0)
+        profile=SrExeProfile::MultiplayerV053;
+    else if (MpResolveStructuredProfile(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr))))
+        profile=SrExeProfile::MultiplayerV053;
     Log(L"SR_PROFILE_DETECT sha256=%ls selected=%ls",exeSha256,
         profile==SrExeProfile::MultiplayerV053?L"MULTIPLAYER_V053":
         profile==SrExeProfile::GammaPassiveV077?L"GAMMA_VISIBLE_V078":L"UNSUPPORTED");
+    MpOptionalCompatibilityReport(profileConfig,exeSha256,
+        profile==SrExeProfile::GammaPassiveV077?2:(profile==SrExeProfile::MultiplayerV053?1:0));
     if(profile==SrExeProfile::Unsupported) {
         Log(L"SR_PROFILE_REJECT reason=UNKNOWN_EXE_SHA256 no_hooks=1");
         return 11;
@@ -8064,8 +8377,12 @@ Log(L"SR_UI_TRACE_CONFIG enabled=%d marker=%ls budget=120_om_120_rs_180_draw rea
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
     g_moduleBase = base;
     BYTE observed[sizeof(kExpectedCall)]{};
-    if (!SafeRead(base + kCallsiteRva, observed, sizeof(observed)) ||
-        std::memcmp(observed, kExpectedCall, sizeof(observed)) != 0) {
+    // Check both the call opcode and its resolved target. The old exact bytes
+    // are kept as an additional invariant for the original validated binary.
+    if ((!g_mpPatternResolved &&
+            (!SafeRead(base+kCallsiteRva,observed,sizeof(observed)) ||
+             std::memcmp(observed,kExpectedCall,sizeof(observed))!=0)) ||
+        !GammaExactE8(base,kCallsiteRva,kRendererRva)) {
         Log(L"ERROR EXE_SIGNATURE_MISMATCH no_hook");
         return 3;
     }

@@ -12,7 +12,7 @@ Unofficial **DLSS Super Resolution and DLAA bridge** for the supported S.T.A.L.K
 
 ---
 
-**Version:** v0.91.7 (stable source baseline). **Platform:** Windows x64, DirectX 11, compatible NVIDIA RTX GPU and current NVIDIA driver. This is a community mod, not an NVIDIA- or game-developer-endorsed product.
+**Version:** v0.91.8 (stable source baseline). **Platform:** Windows x64, DirectX 11, compatible NVIDIA RTX GPU and current NVIDIA driver. This is a community mod, not an NVIDIA- or game-developer-endorsed product.
 
 > **Compatibility:** The bridge checks the game's executable SHA-256 against known profiles before installing hooks. It does **not** support arbitrary Anomaly/GAMMA builds. A different executable hash will fail closed.
 
